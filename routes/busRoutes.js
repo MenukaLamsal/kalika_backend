@@ -6,12 +6,116 @@ const Fare = require('../models/fareModel');
 const User = require('../models/userModel');
 const { verifyToken, isAdmin } = require('../middleware');
 
-// ==================== PUBLIC ENDPOINTS (No Auth Required) ====================
+// ==================== PUBLIC ENDPOINTS ====================
 
-// Search buses by route (public)
+// Get all active routes for dropdown
+router.get('/routes/active', async (req, res) => {
+    try {
+        const routes = await Route.find({ status: 'active' })
+            .select('_id routeName routeCode origin destination distance duration stops')
+            .sort({ routeName: 1 });
+
+        const formattedRoutes = routes.map(route => ({
+            _id: route._id,
+            routeName: route.routeName,
+            routeCode: route.routeCode,
+            origin: route.origin,
+            destination: route.destination,
+            distance: route.distance,
+            duration: route.duration,
+            boardingPoints: route.boardingPoints,
+            mealStops: route.mealStops,
+            totalStops: route.totalStops
+        }));
+
+        res.json({
+            success: true,
+            count: formattedRoutes.length,
+            data: formattedRoutes
+        });
+
+    } catch (error) {
+        console.error('Get active routes error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching routes',
+            error: error.message
+        });
+    }
+});
+
+// Get all active buses
+router.get('/buses/active', async (req, res) => {
+    try {
+        const { routeId, busType, search } = req.query;
+        let query = { status: 'active' };
+
+        if (routeId && routeId !== 'all') {
+            query.routeId = routeId;
+        }
+        if (busType && busType !== 'all') {
+            query.busType = busType;
+        }
+        if (search) {
+            query.$or = [
+                { busName: { $regex: search, $options: 'i' } },
+                { busNumber: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const buses = await Bus.find(query)
+            .populate('routeId', 'routeName origin destination distance duration stops')
+            .sort({ departureDate: 1, departureTime: 1 });
+
+        const formattedBuses = buses.map(bus => ({
+            _id: bus._id,
+            busNumber: bus.busNumber,
+            busName: bus.busName,
+            busType: bus.busType,
+            operator: bus.operator,
+            routeId: bus.routeId._id,
+            routeName: bus.routeId.routeName,
+            routeCode: bus.routeId.routeCode,
+            origin: bus.routeId.origin,
+            destination: bus.routeId.destination,
+            distance: bus.routeId.distance,
+            departureTime: bus.departureTime,
+            arrivalTime: bus.arrivalTime,
+            departureDate: bus.departureDate,
+            arrivalDate: bus.arrivalDate,
+            duration: bus.routeId.duration,
+            fare: bus.fare,
+            totalSeats: bus.totalSeats,
+            seatLayout: bus.seatLayout,
+            amenities: bus.amenities,
+            driverName: bus.driverName,
+            driverPhone: bus.driverPhone,
+            status: bus.status,
+            boardingPoints: bus.routeId.boardingPoints,
+            mealStops: bus.routeId.mealStops,
+            stops: bus.routeId.stops
+        }));
+
+        res.json({
+            success: true,
+            count: formattedBuses.length,
+            data: formattedBuses
+        });
+
+    } catch (error) {
+        console.error('Get active buses error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching buses',
+            error: error.message
+        });
+    }
+});
+
+// Search buses with full details
 router.get('/buses/search', async (req, res) => {
     try {
-        const { from, to, date, passengers } = req.query;
+        const { from, to, date, passengers, busType } = req.query;
         
         console.log(`🔍 Searching buses from ${from} to ${to} on ${date}`);
 
@@ -22,6 +126,7 @@ router.get('/buses/search', async (req, res) => {
             });
         }
 
+        // Find routes matching origin and destination
         const routes = await Route.find({
             origin: { $regex: new RegExp(from, 'i') },
             destination: { $regex: new RegExp(to, 'i') },
@@ -39,45 +144,105 @@ router.get('/buses/search', async (req, res) => {
 
         const routeIds = routes.map(route => route._id);
 
-        const buses = await Bus.find({ 
+        // Build bus query
+        let busQuery = { 
             routeId: { $in: routeIds },
             status: 'active'
-        }).populate('routeId', 'routeName origin destination distance');
+        };
 
-        const formattedBuses = buses.map(bus => {
-            const hours = Math.floor(bus.routeId.distance / 50);
-            const minutes = Math.floor((bus.routeId.distance % 50) * 60 / 50);
-            const duration = `${hours}h ${minutes}m`;
+        if (busType && busType !== 'all') {
+            busQuery.busType = busType;
+        }
+
+        // Parse date
+        const searchDate = date ? new Date(date) : new Date();
+        const startOfDay = new Date(searchDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(searchDate);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        busQuery.departureDate = { $gte: startOfDay, $lte: endOfDay };
+
+        const buses = await Bus.find(busQuery)
+            .populate('routeId', 'routeName origin destination distance duration stops')
+            .sort({ departureTime: 1 });
+
+        // Get booked seats for each bus
+        const Booking = require('../models/bookingModel');
+        const bookings = await Booking.find({
+            busId: { $in: buses.map(b => b._id) },
+            journeyDate: { $gte: startOfDay, $lte: endOfDay },
+            status: { $in: ['confirmed', 'pending'] }
+        });
+
+        const bookedSeatsMap = {};
+        bookings.forEach(booking => {
+            const busId = booking.busId.toString();
+            if (!bookedSeatsMap[busId]) {
+                bookedSeatsMap[busId] = [];
+            }
+            booking.seats.forEach(seat => {
+                bookedSeatsMap[busId].push(seat.seatNumber);
+            });
+        });
+
+        const formattedBuses = await Promise.all(buses.map(async (bus) => {
+            const busId = bus._id.toString();
+            const bookedSeats = bookedSeatsMap[busId] || [];
+            const availableSeats = bus.totalSeats - bookedSeats.length;
             
-            const availableSeats = Math.floor(Math.random() * bus.totalSeats) + 1;
-            const rating = (Math.random() * 2 + 3).toFixed(1);
+            // Get fare details
+            const fare = await Fare.findOne({
+                routeId: bus.routeId._id,
+                busType: bus.busType,
+                status: 'active'
+            });
+
+            const baseFare = fare ? fare.baseFare : bus.fare;
+            const perKmRate = fare ? fare.perKmRate : 1.5;
+            const calculatedFare = baseFare + (bus.routeId.distance * perKmRate);
 
             return {
                 _id: bus._id,
                 busNumber: bus.busNumber,
                 busName: bus.busName,
                 busType: bus.busType,
-                operator: bus.busName?.split(' ')[0] || 'Travels',
-                route: `${bus.routeId.origin}-${bus.routeId.destination}`,
+                operator: bus.operator,
+                routeId: bus.routeId._id,
+                routeName: bus.routeId.routeName,
                 origin: bus.routeId.origin,
                 destination: bus.routeId.destination,
-                departureTime: bus.departureTime || '08:00',
-                arrivalTime: bus.arrivalTime || '20:00',
-                duration: duration,
-                price: bus.fare,
-                fare: bus.fare,
-                availableSeats: availableSeats,
+                distance: bus.routeId.distance,
+                departureTime: bus.departureTime,
+                arrivalTime: bus.arrivalTime,
+                departureDate: bus.departureDate,
+                duration: bus.routeId.duration,
+                fare: Math.round(calculatedFare),
+                baseFare: baseFare,
                 totalSeats: bus.totalSeats,
-                rating: parseFloat(rating),
+                availableSeats: availableSeats,
+                seatLayout: bus.seatLayout,
                 amenities: bus.amenities,
-                status: 'active'
+                driverName: bus.driverName,
+                driverPhone: bus.driverPhone,
+                boardingPoints: bus.routeId.boardingPoints,
+                mealStops: bus.routeId.mealStops,
+                stops: bus.routeId.stops,
+                bookedSeats: bookedSeats,
+                rating: (Math.random() * 2 + 3).toFixed(1) // You can replace with actual ratings
             };
-        });
+        }));
+
+        // Filter out buses with no available seats if passengers specified
+        let filteredBuses = formattedBuses;
+        if (passengers) {
+            filteredBuses = formattedBuses.filter(bus => bus.availableSeats >= parseInt(passengers));
+        }
 
         res.json({
             success: true,
-            count: formattedBuses.length,
-            data: formattedBuses,
+            count: filteredBuses.length,
+            data: filteredBuses,
             from: from,
             to: to,
             date: date || new Date().toISOString().split('T')[0],
@@ -94,11 +259,11 @@ router.get('/buses/search', async (req, res) => {
     }
 });
 
-// Get single bus by ID for public users (NO AUTH REQUIRED)
-router.get('/buses/public/:id', async (req, res) => {
+// Get bus by ID with full details
+router.get('/buses/:id/details', async (req, res) => {
     try {
         const bus = await Bus.findById(req.params.id)
-            .populate('routeId', 'routeName origin destination distance');
+            .populate('routeId', 'routeName origin destination distance duration stops');
 
         if (!bus) {
             return res.status(404).json({
@@ -107,13 +272,32 @@ router.get('/buses/public/:id', async (req, res) => {
             });
         }
 
-        // Only return public information (no driver details)
-        const hours = Math.floor(bus.routeId.distance / 50);
-        const minutes = Math.floor((bus.routeId.distance % 50) * 60 / 50);
-        const duration = `${hours}h ${minutes}m`;
+        // Get fare details
+        const fare = await Fare.findOne({
+            routeId: bus.routeId._id,
+            busType: bus.busType,
+            status: 'active'
+        });
 
-        // Generate seats (this would come from your seat layout logic)
-        const seats = generateSeats(bus.totalSeats, bus.seatLayout);
+        // Get booked seats for today
+        const { date } = req.query;
+        const searchDate = date ? new Date(date) : new Date();
+        const startOfDay = new Date(searchDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(searchDate);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const Booking = require('../models/bookingModel');
+        const bookings = await Booking.find({
+            busId: bus._id,
+            journeyDate: { $gte: startOfDay, $lte: endOfDay },
+            status: { $in: ['confirmed', 'pending'] }
+        });
+
+        const bookedSeats = bookings.flatMap(b => b.seats.map(s => s.seatNumber));
+
+        // Generate seats
+        const seats = generateSeats(bus.totalSeats, bus.seatLayout, bookedSeats, fare);
 
         res.json({
             success: true,
@@ -122,82 +306,259 @@ router.get('/buses/public/:id', async (req, res) => {
                 busNumber: bus.busNumber,
                 busName: bus.busName,
                 busType: bus.busType,
-                operator: bus.busName?.split(' ')[0] || 'Travels',
-                route: `${bus.routeId.origin}-${bus.routeId.destination}`,
+                operator: bus.operator,
+                routeId: bus.routeId._id,
+                routeName: bus.routeId.routeName,
                 origin: bus.routeId.origin,
                 destination: bus.routeId.destination,
-                departureTime: bus.departureTime || '08:00',
-                arrivalTime: bus.arrivalTime || '20:00',
-                duration: duration,
-                fare: bus.fare,
+                distance: bus.routeId.distance,
+                departureTime: bus.departureTime,
+                arrivalTime: bus.arrivalTime,
+                departureDate: bus.departureDate,
+                duration: bus.routeId.duration,
+                fare: fare ? fare.baseFare : bus.fare,
+                fareDetails: fare,
                 totalSeats: bus.totalSeats,
-                amenities: bus.amenities,
+                availableSeats: bus.totalSeats - bookedSeats.length,
                 seatLayout: bus.seatLayout,
-                seats: seats
+                amenities: bus.amenities,
+                driverName: bus.driverName,
+                driverPhone: bus.driverPhone,
+                driverLicense: bus.driverLicense,
+                boardingPoints: bus.routeId.boardingPoints,
+                mealStops: bus.routeId.mealStops,
+                stops: bus.routeId.stops,
+                seats: seats,
+                bookedSeats: bookedSeats,
+                status: bus.status
             }
         });
 
     } catch (error) {
-        console.error('Get bus error:', error);
+        console.error('Get bus details error:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching bus',
+            message: 'Error fetching bus details',
             error: error.message
         });
     }
 });
 
-// Get popular routes (public)
-router.get('/popular-routes', async (req, res) => {
-    try {
-        const routes = await Route.find({ status: 'active' })
-            .limit(6)
-            .select('origin destination');
+// ==================== ADMIN ENDPOINTS ====================
 
-        const popularRoutes = routes.map(route => 
-            `${route.origin}-${route.destination}`
+// Get all routes with full details
+router.get('/admin/routes', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const { status, search } = req.query;
+        let query = {};
+
+        if (status && status !== 'all') {
+            query.status = status;
+        }
+
+        if (search) {
+            query.$or = [
+                { routeName: { $regex: search, $options: 'i' } },
+                { routeCode: { $regex: search, $options: 'i' } },
+                { origin: { $regex: search, $options: 'i' } },
+                { destination: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const routes = await Route.find(query)
+            .populate('createdBy', 'firstName lastName email')
+            .sort({ createdAt: -1 });
+
+        res.json({
+            success: true,
+            count: routes.length,
+            data: routes
+        });
+
+    } catch (error) {
+        console.error('Get admin routes error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching routes',
+            error: error.message
+        });
+    }
+});
+
+// Create new route with stops
+router.post('/admin/routes', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const {
+            routeName,
+            routeCode,
+            origin,
+            destination,
+            distance,
+            duration,
+            stops,
+            status
+        } = req.body;
+
+        // Check if route name already exists
+        const existingRoute = await Route.findOne({ 
+            $or: [
+                { routeName },
+                { routeCode: routeCode?.toUpperCase() }
+            ]
+        });
+
+        if (existingRoute) {
+            return res.status(400).json({
+                success: false,
+                message: 'Route with this name or code already exists'
+            });
+        }
+
+        const user = await User.findOne({ email: req.user.email });
+
+        // Sort stops by order
+        const sortedStops = stops.sort((a, b) => a.order - b.order);
+
+        const route = new Route({
+            routeName,
+            routeCode: routeCode?.toUpperCase(),
+            origin,
+            destination,
+            distance,
+            duration,
+            stops: sortedStops,
+            status: status || 'active',
+            createdBy: user._id
+        });
+
+        await route.save();
+
+        res.status(201).json({
+            success: true,
+            message: 'Route created successfully',
+            data: route
+        });
+
+    } catch (error) {
+        console.error('Create route error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating route',
+            error: error.message
+        });
+    }
+});
+
+// Update route
+router.put('/admin/routes/:id', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const {
+            routeName,
+            routeCode,
+            origin,
+            destination,
+            distance,
+            duration,
+            stops,
+            status
+        } = req.body;
+
+        // Check if route name exists for another route
+        const existingRoute = await Route.findOne({
+            $or: [
+                { routeName, _id: { $ne: req.params.id } },
+                { routeCode: routeCode?.toUpperCase(), _id: { $ne: req.params.id } }
+            ]
+        });
+
+        if (existingRoute) {
+            return res.status(400).json({
+                success: false,
+                message: 'Route with this name or code already exists'
+            });
+        }
+
+        // Sort stops by order
+        const sortedStops = stops.sort((a, b) => a.order - b.order);
+
+        const route = await Route.findByIdAndUpdate(
+            req.params.id,
+            {
+                routeName,
+                routeCode: routeCode?.toUpperCase(),
+                origin,
+                destination,
+                distance,
+                duration,
+                stops: sortedStops,
+                status
+            },
+            { new: true, runValidators: true }
         );
 
+        if (!route) {
+            return res.status(404).json({
+                success: false,
+                message: 'Route not found'
+            });
+        }
+
         res.json({
             success: true,
-            data: popularRoutes
+            message: 'Route updated successfully',
+            data: route
         });
 
     } catch (error) {
-        console.error('Get popular routes error:', error);
+        console.error('Update route error:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching popular routes',
+            message: 'Error updating route',
             error: error.message
         });
     }
 });
 
-// Get all operators (public)
-router.get('/operators', async (req, res) => {
+// Delete route
+router.delete('/admin/routes/:id', verifyToken, isAdmin, async (req, res) => {
     try {
-        const buses = await Bus.find({ status: 'active' }).select('busName');
-        const operators = [...new Set(buses.map(bus => bus.busName?.split(' ')[0] || 'Travels'))];
-        
+        const route = await Route.findById(req.params.id);
+
+        if (!route) {
+            return res.status(404).json({
+                success: false,
+                message: 'Route not found'
+            });
+        }
+
+        // Check if route has buses assigned
+        const buses = await Bus.find({ routeId: route._id });
+        if (buses.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot delete route with assigned buses'
+            });
+        }
+
+        await route.deleteOne();
+
         res.json({
             success: true,
-            data: operators
+            message: 'Route deleted successfully'
         });
 
     } catch (error) {
-        console.error('Get operators error:', error);
+        console.error('Delete route error:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching operators',
+            message: 'Error deleting route',
             error: error.message
         });
     }
 });
 
-// ==================== ADMIN ENDPOINTS (Auth Required) ====================
-
-// Get all buses (admin only)
-router.get('/buses', verifyToken, isAdmin, async (req, res) => {
+// Get all buses (admin)
+router.get('/admin/buses', verifyToken, isAdmin, async (req, res) => {
     try {
         const { routeId, busType, status, search } = req.query;
         let query = {};
@@ -215,7 +576,7 @@ router.get('/buses', verifyToken, isAdmin, async (req, res) => {
         }
 
         const buses = await Bus.find(query)
-            .populate('routeId', 'routeName origin destination distance')
+            .populate('routeId', 'routeName origin destination distance duration')
             .populate('createdBy', 'firstName lastName')
             .sort({ createdAt: -1 });
 
@@ -238,6 +599,8 @@ router.get('/buses', verifyToken, isAdmin, async (req, res) => {
             fare: bus.fare,
             departureTime: bus.departureTime,
             arrivalTime: bus.arrivalTime,
+            departureDate: bus.departureDate,
+            arrivalDate: bus.arrivalDate,
             status: bus.status,
             createdAt: bus.createdAt
         }));
@@ -249,7 +612,7 @@ router.get('/buses', verifyToken, isAdmin, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Get buses error:', error);
+        console.error('Get admin buses error:', error);
         res.status(500).json({
             success: false,
             message: 'Error fetching buses',
@@ -258,122 +621,8 @@ router.get('/buses', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-// Get single bus by ID (admin only - with full details)
-router.get('/buses/:id', verifyToken, isAdmin, async (req, res) => {
-    try {
-        const bus = await Bus.findById(req.params.id)
-            .populate('routeId', 'routeName origin destination distance');
-
-        if (!bus) {
-            return res.status(404).json({
-                success: false,
-                message: 'Bus not found'
-            });
-        }
-
-        res.json({
-            success: true,
-            data: {
-                _id: bus._id,
-                busNumber: bus.busNumber,
-                busName: bus.busName,
-                busType: bus.busType,
-                routeId: bus.routeId._id,
-                routeName: bus.routeId.routeName,
-                origin: bus.routeId.origin,
-                destination: bus.routeId.destination,
-                distance: bus.routeId.distance,
-                driverName: bus.driverName,
-                driverPhone: bus.driverPhone,
-                driverLicense: bus.driverLicense,
-                totalSeats: bus.totalSeats,
-                seatLayout: bus.seatLayout,
-                amenities: bus.amenities,
-                fare: bus.fare,
-                departureTime: bus.departureTime,
-                arrivalTime: bus.arrivalTime,
-                status: bus.status
-            }
-        });
-
-    } catch (error) {
-        console.error('Get bus error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error fetching bus',
-            error: error.message
-        });
-    }
-});
-
-// Get fare for bus type and route (admin only)
-router.get('/bus-fare/:routeId/:busType', verifyToken, isAdmin, async (req, res) => {
-    try {
-        const { routeId, busType } = req.params;
-        
-        const route = await Route.findById(routeId);
-        if (!route) {
-            return res.status(404).json({
-                success: false,
-                message: 'Route not found'
-            });
-        }
-
-        const fareRecord = await Fare.findOne({ 
-            routeId: routeId, 
-            busType: busType,
-            status: 'active'
-        });
-        
-        if (fareRecord) {
-            return res.json({
-                success: true,
-                data: {
-                    fare: fareRecord.baseFare,
-                    routeName: route.routeName,
-                    source: 'fare_declaration',
-                    effectiveFrom: fareRecord.effectiveFrom,
-                    effectiveTo: fareRecord.effectiveTo
-                }
-            });
-        }
-
-        let baseRate = 0;
-        switch(busType) {
-            case 'AC Sleeper': baseRate = 2.5; break;
-            case 'AC Seater': baseRate = 2.0; break;
-            case 'Non-AC Sleeper': baseRate = 1.5; break;
-            case 'Non-AC Seater': baseRate = 1.2; break;
-            case 'Luxury': baseRate = 3.0; break;
-            case 'Volvo': baseRate = 2.8; break;
-            default: baseRate = 1.5;
-        }
-
-        const calculatedFare = Math.round(route.distance * baseRate);
-
-        res.json({
-            success: true,
-            data: {
-                fare: calculatedFare,
-                routeName: route.routeName,
-                source: 'calculated',
-                distance: route.distance,
-                rate: baseRate
-            }
-        });
-
-    } catch (error) {
-        console.error('Get fare error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error calculating fare',
-            error: error.message
-        });
-    }
-});
-
-// Create new bus (admin only)
-router.post('/buses', verifyToken, isAdmin, async (req, res) => {
+// Create new bus with all details
+router.post('/admin/buses', verifyToken, isAdmin, async (req, res) => {
     try {
         const {
             busNumber,
@@ -389,9 +638,20 @@ router.post('/buses', verifyToken, isAdmin, async (req, res) => {
             fare,
             departureTime,
             arrivalTime,
+            departureDate,
+            arrivalDate,
             status
         } = req.body;
 
+        // Validate dates
+        if (new Date(departureDate) >= new Date(arrivalDate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Arrival date must be after departure date'
+            });
+        }
+
+        // Check if bus number already exists
         const existingBus = await Bus.findOne({ busNumber: busNumber?.toUpperCase() });
         if (existingBus) {
             return res.status(400).json({
@@ -400,6 +660,7 @@ router.post('/buses', verifyToken, isAdmin, async (req, res) => {
             });
         }
 
+        // Check if route exists
         const route = await Route.findById(routeId);
         if (!route) {
             return res.status(404).json({
@@ -422,8 +683,10 @@ router.post('/buses', verifyToken, isAdmin, async (req, res) => {
             seatLayout: seatLayout || '2x2',
             amenities: amenities || [],
             fare,
-            departureTime: departureTime || '08:00',
-            arrivalTime: arrivalTime || '20:00',
+            departureTime,
+            arrivalTime,
+            departureDate: new Date(departureDate),
+            arrivalDate: new Date(arrivalDate),
             status: status || 'active',
             createdBy: user._id
         });
@@ -434,7 +697,28 @@ router.post('/buses', verifyToken, isAdmin, async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Bus created successfully',
-            data: bus
+            data: {
+                _id: bus._id,
+                busNumber: bus.busNumber,
+                busName: bus.busName,
+                busType: bus.busType,
+                routeId: bus.routeId._id,
+                routeName: bus.routeId.routeName,
+                origin: bus.routeId.origin,
+                destination: bus.routeId.destination,
+                driverName: bus.driverName,
+                driverPhone: bus.driverPhone,
+                driverLicense: bus.driverLicense,
+                totalSeats: bus.totalSeats,
+                seatLayout: bus.seatLayout,
+                amenities: bus.amenities,
+                fare: bus.fare,
+                departureTime: bus.departureTime,
+                arrivalTime: bus.arrivalTime,
+                departureDate: bus.departureDate,
+                arrivalDate: bus.arrivalDate,
+                status: bus.status
+            }
         });
 
     } catch (error) {
@@ -447,8 +731,8 @@ router.post('/buses', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-// Update bus (admin only)
-router.put('/buses/:id', verifyToken, isAdmin, async (req, res) => {
+// Update bus
+router.put('/admin/buses/:id', verifyToken, isAdmin, async (req, res) => {
     try {
         const {
             busNumber,
@@ -464,9 +748,20 @@ router.put('/buses/:id', verifyToken, isAdmin, async (req, res) => {
             fare,
             departureTime,
             arrivalTime,
+            departureDate,
+            arrivalDate,
             status
         } = req.body;
 
+        // Validate dates if both provided
+        if (departureDate && arrivalDate && new Date(departureDate) >= new Date(arrivalDate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Arrival date must be after departure date'
+            });
+        }
+
+        // Check if bus number exists for another bus
         if (busNumber) {
             const existingBus = await Bus.findOne({ 
                 busNumber: busNumber?.toUpperCase(),
@@ -480,6 +775,7 @@ router.put('/buses/:id', verifyToken, isAdmin, async (req, res) => {
             }
         }
 
+        // Check if route exists
         const route = await Route.findById(routeId);
         if (!route) {
             return res.status(404).json({
@@ -504,6 +800,8 @@ router.put('/buses/:id', verifyToken, isAdmin, async (req, res) => {
                 fare,
                 departureTime,
                 arrivalTime,
+                departureDate: departureDate ? new Date(departureDate) : undefined,
+                arrivalDate: arrivalDate ? new Date(arrivalDate) : undefined,
                 status
             },
             { new: true, runValidators: true }
@@ -532,8 +830,8 @@ router.put('/buses/:id', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-// Delete bus (admin only)
-router.delete('/buses/:id', verifyToken, isAdmin, async (req, res) => {
+// Delete bus
+router.delete('/admin/buses/:id', verifyToken, isAdmin, async (req, res) => {
     try {
         const bus = await Bus.findById(req.params.id);
         if (!bus) {
@@ -542,11 +840,24 @@ router.delete('/buses/:id', verifyToken, isAdmin, async (req, res) => {
                 message: 'Bus not found'
             });
         }
+
+        // Check if bus has any bookings
+        const Booking = require('../models/bookingModel');
+        const hasBookings = await Booking.findOne({ busId: bus._id });
+        if (hasBookings) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot delete bus with existing bookings'
+            });
+        }
+
         await bus.deleteOne();
+
         res.json({
             success: true,
             message: 'Bus deleted successfully'
         });
+
     } catch (error) {
         console.error('Delete bus error:', error);
         res.status(500).json({
@@ -557,8 +868,8 @@ router.delete('/buses/:id', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-// Toggle bus status (admin only)
-router.patch('/buses/:id/toggle-status', verifyToken, isAdmin, async (req, res) => {
+// Toggle bus status
+router.patch('/admin/buses/:id/toggle-status', verifyToken, isAdmin, async (req, res) => {
     try {
         const bus = await Bus.findById(req.params.id);
         if (!bus) {
@@ -567,13 +878,16 @@ router.patch('/buses/:id/toggle-status', verifyToken, isAdmin, async (req, res) 
                 message: 'Bus not found'
             });
         }
+
         bus.status = bus.status === 'active' ? 'inactive' : 'active';
         await bus.save();
+
         res.json({
             success: true,
             message: `Bus ${bus.status === 'active' ? 'activated' : 'deactivated'} successfully`,
             data: { status: bus.status }
         });
+
     } catch (error) {
         console.error('Toggle status error:', error);
         res.status(500).json({
@@ -583,67 +897,267 @@ router.patch('/buses/:id/toggle-status', verifyToken, isAdmin, async (req, res) 
         });
     }
 });
-// Get boarding points for a bus
-router.get('/buses/:id/boarding-points', async (req, res) => {
-  try {
-    const boardingPoints = await BoardingPoint.find({ 
-      busId: req.params.id,
-      isActive: true 
-    }).sort({ time: 1 });
-    
-    res.json({
-      success: true,
-      data: boardingPoints
-    });
-  } catch (error) {
-    console.error('Error fetching boarding points:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching boarding points'
-    });
-  }
-});
-// Get boarding points for a bus (public) - FIXED VERSION
-// Get boarding points for a bus (public) - Add this after your other routes
-router.get('/buses/:id/boarding-points', async (req, res) => {
+
+// ==================== FARE MANAGEMENT ====================
+
+// Get all fares
+router.get('/admin/fares', verifyToken, isAdmin, async (req, res) => {
     try {
-        const BoardingPoint = require('../models/boardingPointModel');
-        
-        const boardingPoints = await BoardingPoint.find({ 
-            busId: req.params.id,
-            isActive: true 
-        }).sort({ time: 1 });
-        
+        const { routeId, busType, status } = req.query;
+        let query = {};
+
+        if (routeId && routeId !== 'all') query.routeId = routeId;
+        if (busType && busType !== 'all') query.busType = busType;
+        if (status && status !== 'all') query.status = status;
+
+        const fares = await Fare.find(query)
+            .populate('routeId', 'routeName origin destination distance')
+            .populate('createdBy', 'firstName lastName')
+            .sort({ createdAt: -1 });
+
         res.json({
             success: true,
-            data: boardingPoints
+            count: fares.length,
+            data: fares
         });
+
     } catch (error) {
-        console.error('Error fetching boarding points:', error);
+        console.error('Get fares error:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching boarding points'
+            message: 'Error fetching fares',
+            error: error.message
+        });
+    }
+});
+
+// Create fare
+router.post('/admin/fares', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const {
+            routeId,
+            busType,
+            baseFare,
+            perKmRate,
+            minimumFare,
+            discountPercent,
+            taxPercent,
+            serviceCharge,
+            seatFare,
+            effectiveFrom,
+            effectiveTo,
+            status
+        } = req.body;
+
+        // Check if route exists
+        const route = await Route.findById(routeId);
+        if (!route) {
+            return res.status(404).json({
+                success: false,
+                message: 'Route not found'
+            });
+        }
+
+        // Check if fare already exists
+        const existingFare = await Fare.findOne({ routeId, busType });
+        if (existingFare) {
+            return res.status(400).json({
+                success: false,
+                message: `Fare already exists for ${route.routeName} with ${busType} bus type`
+            });
+        }
+
+        const user = await User.findOne({ email: req.user.email });
+
+        const fare = new Fare({
+            routeId,
+            busType,
+            baseFare,
+            perKmRate,
+            minimumFare,
+            discountPercent: discountPercent || 0,
+            taxPercent: taxPercent || 18,
+            serviceCharge: serviceCharge || 0,
+            seatFare: seatFare || {},
+            effectiveFrom: new Date(effectiveFrom),
+            effectiveTo: new Date(effectiveTo),
+            status: status || 'active',
+            createdBy: user._id
+        });
+
+        await fare.save();
+        await fare.populate('routeId', 'routeName origin destination');
+
+        res.status(201).json({
+            success: true,
+            message: 'Fare created successfully',
+            data: fare
+        });
+
+    } catch (error) {
+        console.error('Create fare error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating fare',
+            error: error.message
+        });
+    }
+});
+
+// Update fare
+router.put('/admin/fares/:id', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const {
+            busType,
+            baseFare,
+            perKmRate,
+            minimumFare,
+            discountPercent,
+            taxPercent,
+            serviceCharge,
+            seatFare,
+            effectiveFrom,
+            effectiveTo,
+            status
+        } = req.body;
+
+        const fare = await Fare.findByIdAndUpdate(
+            req.params.id,
+            {
+                busType,
+                baseFare,
+                perKmRate,
+                minimumFare,
+                discountPercent,
+                taxPercent,
+                serviceCharge,
+                seatFare,
+                effectiveFrom: new Date(effectiveFrom),
+                effectiveTo: new Date(effectiveTo),
+                status
+            },
+            { new: true, runValidators: true }
+        ).populate('routeId', 'routeName origin destination');
+
+        if (!fare) {
+            return res.status(404).json({
+                success: false,
+                message: 'Fare not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Fare updated successfully',
+            data: fare
+        });
+
+    } catch (error) {
+        console.error('Update fare error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating fare',
+            error: error.message
+        });
+    }
+});
+
+// Delete fare
+router.delete('/admin/fares/:id', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const fare = await Fare.findById(req.params.id);
+        if (!fare) {
+            return res.status(404).json({
+                success: false,
+                message: 'Fare not found'
+            });
+        }
+        await fare.deleteOne();
+        res.json({
+            success: true,
+            message: 'Fare deleted successfully'
+        });
+    } catch (error) {
+        console.error('Delete fare error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error deleting fare',
+            error: error.message
+        });
+    }
+});
+
+// Toggle fare status
+router.patch('/admin/fares/:id/toggle-status', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const fare = await Fare.findById(req.params.id);
+        if (!fare) {
+            return res.status(404).json({
+                success: false,
+                message: 'Fare not found'
+            });
+        }
+        fare.status = fare.status === 'active' ? 'inactive' : 'active';
+        await fare.save();
+        res.json({
+            success: true,
+            message: `Fare ${fare.status === 'active' ? 'activated' : 'deactivated'} successfully`,
+            data: { status: fare.status }
+        });
+    } catch (error) {
+        console.error('Toggle fare status error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error toggling fare status',
+            error: error.message
         });
     }
 });
 
 // Helper function to generate seats
-function generateSeats(totalSeats, layout) {
+function generateSeats(totalSeats, layout, bookedSeats = [], fare = null) {
     const seats = [];
+    const seatsPerRow = 4; // A, B, C, D
+    
     for (let i = 1; i <= totalSeats; i++) {
-        const row = Math.ceil(i / 4);
-        const column = ((i - 1) % 4) + 1;
-        const isBooked = Math.random() < 0.3;
+        const row = Math.ceil(i / seatsPerRow);
+        const columnIndex = (i - 1) % seatsPerRow;
+        const columns = ['A', 'B', 'C', 'D'];
+        const column = columns[columnIndex];
+        const seatNumber = `${row}${column}`;
+        
+        // Determine seat type based on layout
+        let seatType = 'standard';
+        let seatPrice = fare ? fare.baseFare : 0;
+        
+        // Apply seat specific fare if available
+        if (fare && fare.seatFare && fare.seatFare[seatNumber]) {
+            seatPrice = fare.seatFare[seatNumber];
+        } else if (fare) {
+            // Calculate based on position
+            if (column === 'A' || column === 'D') {
+                seatPrice = fare.baseFare * 1.1; // Window seats 10% premium
+            } else if (column === 'B') {
+                seatPrice = fare.baseFare * 0.95; // Middle seats 5% discount
+            }
+        }
+        
+        // Determine if ladies seat (e.g., even rows, column B and D)
+        const isLadies = (row % 2 === 0) && (column === 'B' || column === 'D');
         
         seats.push({
-            number: i.toString(),
+            id: i,
+            number: seatNumber,
             row: row,
             column: column,
-            isAvailable: !isBooked,
-            isFemale: false,
-            price: 0
+            price: Math.round(seatPrice),
+            status: bookedSeats.includes(seatNumber) ? 'booked' : (isLadies ? 'ladies' : 'available'),
+            isLadies: isLadies,
+            type: seatType,
+            tempSelected: false
         });
     }
+    
     return seats;
 }
 

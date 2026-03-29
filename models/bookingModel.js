@@ -13,7 +13,7 @@ const bookingSchema = new mongoose.Schema({
     },
     busId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Bus',
+        ref: 'Bus',  // This references the Bus model
         required: true
     },
     routeId: {

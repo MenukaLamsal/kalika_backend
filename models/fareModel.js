@@ -16,28 +16,38 @@ const fareSchema = new mongoose.Schema({
         required: [true, 'Base fare is required'],
         min: [0, 'Base fare cannot be negative']
     },
-    // NEW: Seat capacity configuration
-    seatCapacity: {
-        totalSeats: {
-            type: Number,
-            required: [true, 'Total seats is required'],
-            min: [10, 'Minimum 10 seats required'],
-            max: [60, 'Maximum 60 seats allowed'],
-            default: 40
-        },
-        seatLayout: {
-            type: String,
-            enum: ['2x2', '2x1', '1x2', '2x3'],
-            default: '2x2'
-        },
-        lowerDeckSeats: {
-            type: Number,
-            default: 20
-        },
-        upperDeckSeats: {
-            type: Number,
-            default: 20
-        }
+    perKmRate: {
+        type: Number,
+        required: [true, 'Per km rate is required'],
+        min: [0, 'Per km rate cannot be negative']
+    },
+    minimumFare: {
+        type: Number,
+        required: [true, 'Minimum fare is required'],
+        min: [0, 'Minimum fare cannot be negative']
+    },
+    discountPercent: {
+        type: Number,
+        default: 0,
+        min: [0, 'Discount cannot be negative'],
+        max: [100, 'Discount cannot exceed 100%']
+    },
+    taxPercent: {
+        type: Number,
+        required: true,
+        default: 18,
+        min: [0, 'Tax cannot be negative'],
+        max: [100, 'Tax cannot exceed 100%']
+    },
+    serviceCharge: {
+        type: Number,
+        default: 0,
+        min: [0, 'Service charge cannot be negative']
+    },
+    seatFare: {
+        type: Map,
+        of: Number,
+        default: {}
     },
     effectiveFrom: {
         type: Date,
@@ -63,5 +73,33 @@ const fareSchema = new mongoose.Schema({
 
 // Ensure unique fare per route and bus type
 fareSchema.index({ routeId: 1, busType: 1 }, { unique: true });
+
+// Calculate final fare
+fareSchema.methods.calculateFare = function(distance, seatNumber) {
+    let fare = this.baseFare;
+    
+    // Add per km rate
+    fare += distance * this.perKmRate;
+    
+    // Apply minimum fare
+    if (fare < this.minimumFare) {
+        fare = this.minimumFare;
+    }
+    
+    // Apply seat specific fare if available
+    if (seatNumber && this.seatFare && this.seatFare.has(seatNumber)) {
+        fare = this.seatFare.get(seatNumber);
+    }
+    
+    // Apply discount
+    const discount = (fare * this.discountPercent) / 100;
+    const afterDiscount = fare - discount;
+    
+    // Apply tax
+    const tax = (afterDiscount * this.taxPercent) / 100;
+    
+    // Add service charge
+    return Math.round((afterDiscount + tax + this.serviceCharge) * 100) / 100;
+};
 
 module.exports = mongoose.model('Fare', fareSchema);

@@ -23,21 +23,19 @@ const busSchema = new mongoose.Schema({
         ref: 'Route',
         required: [true, 'Route is required']
     },
-    boardingPoints: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'BoardingPoint'
-    }],
     driverName: {
         type: String,
         required: [true, 'Driver name is required']
     },
     driverPhone: {
         type: String,
-        required: [true, 'Driver phone is required']
+        required: [true, 'Driver phone is required'],
+        match: [/^[0-9]{10}$/, 'Please enter valid 10-digit phone number']
     },
     driverLicense: {
         type: String,
-        required: [true, 'Driver license is required']
+        required: [true, 'Driver license is required'],
+        uppercase: true
     },
     totalSeats: {
         type: Number,
@@ -52,23 +50,34 @@ const busSchema = new mongoose.Schema({
     },
     amenities: [{
         type: String,
-        enum: ['AC', 'WiFi', 'Charging Point', 'Water Bottle', 'Blanket', 'Snacks', 'Movie', 'GPS']
+        enum: ['AC', 'WiFi', 'Charging Point', 'Water Bottle', 'Blanket', 'Snacks', 'Movie', 'GPS', 'Reading Light']
     }],
     fare: {
         type: Number,
-        required: true
+        required: true,
+        min: [0, 'Fare cannot be negative']
     },
     departureTime: {
         type: String,
-        default: '08:00'
+        required: [true, 'Departure time is required'],
+        match: [/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, 'Invalid time format']
     },
     arrivalTime: {
         type: String,
-        default: '20:00'
+        required: [true, 'Arrival time is required'],
+        match: [/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, 'Invalid time format']
+    },
+    departureDate: {
+        type: Date,
+        required: [true, 'Departure date is required']
+    },
+    arrivalDate: {
+        type: Date,
+        required: [true, 'Arrival date is required']
     },
     status: {
         type: String,
-        enum: ['active', 'inactive', 'maintenance'],
+        enum: ['active', 'inactive', 'maintenance', 'cancelled'],
         default: 'active'
     },
     createdBy: {
@@ -82,6 +91,16 @@ const busSchema = new mongoose.Schema({
 
 // Index for search
 busSchema.index({ busNumber: 1, busName: 1 });
-busSchema.index({ 'routeId': 1 });
+busSchema.index({ routeId: 1, status: 1 });
+busSchema.index({ departureDate: 1 });
+
+// Virtual for operator name
+busSchema.virtual('operator').get(function() {
+    return this.busName?.split(' ')[0] || 'Travels';
+});
+
+// Ensure virtuals are included in JSON
+busSchema.set('toJSON', { virtuals: true });
+busSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model('Bus', busSchema);
