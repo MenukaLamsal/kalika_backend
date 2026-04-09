@@ -1,9 +1,10 @@
+
+
 const mongoose = require('mongoose');
 
 const bookingSchema = new mongoose.Schema({
     bookingId: {
         type: String,
-        required: true,
         unique: true
     },
     userId: {
@@ -13,7 +14,7 @@ const bookingSchema = new mongoose.Schema({
     },
     busId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Bus',  // This references the Bus model
+        ref: 'Bus',
         required: true
     },
     routeId: {
@@ -21,78 +22,70 @@ const bookingSchema = new mongoose.Schema({
         ref: 'Route',
         required: true
     },
-    busDetails: {
-        busNumber: String,
-        busName: String,
-        busType: String,
-        operator: String
-    },
-    routeDetails: {
-        origin: String,
-        destination: String,
-        departureTime: String,
-        arrivalTime: String,
-        duration: String,
-        distance: Number
-    },
     seats: [{
-        seatNumber: String,
-        price: Number,
-        passengerName: String,
-        passengerAge: Number,
-        passengerGender: String,
-        passengerPhone: String,
-        passengerEmail: String
+        seatNumber: { type: String, required: true },
+        passengerName: { type: String, required: true },
+        passengerAge: { type: Number, required: true },
+        passengerGender: { type: String, required: true },
+        passengerPhone: { type: String, required: true },
+        passengerEmail: { type: String }
     }],
-    totalAmount: {
-        type: Number,
-        required: true
-    },
-    taxAmount: {
-        type: Number,
-        required: true
-    },
-    bookingDate: {
-        type: Date,
-        default: Date.now
-    },
-    journeyDate: {
-        type: Date,
-        required: true
-    },
-    status: {
-        type: String,
-        enum: ['confirmed', 'cancelled', 'completed', 'pending'],
-        default: 'confirmed'
-    },
+    selectedSeats: [{
+        seatNumber: String,
+        seatType: String,
+        price: Number
+    }],
+    passengerDetails: [{
+        name: String,
+        age: Number,
+        gender: String,
+        seatNumber: String,
+        phone: String,
+        email: String
+    }],
+    totalAmount: { type: Number, required: true },
+    taxAmount: { type: Number, default: 0 },
     paymentStatus: {
         type: String,
-        enum: ['paid', 'pending', 'refunded'],
-        default: 'paid'
+        enum: ['pending', 'completed', 'failed', 'refunded'],
+        default: 'pending'
     },
     paymentMethod: {
         type: String,
-        enum: ['card', 'upi', 'netbanking', 'wallet'],
-        default: 'card'
+        enum: ['khalti', 'esewa', 'cash'],
+        required: true
     },
-    cancellationDetails: {
-        cancelledAt: Date,
-        refundAmount: Number,
-        reason: String
-    }
-}, {
-    timestamps: true
-});
+    paymentDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
+    boardingPoint: { type: String, default: '' },
+    bookingStatus: {
+        type: String,
+        enum: ['confirmed', 'cancelled', 'expired', 'pending'],
+        default: 'confirmed'
+    },
+    bookingDate: { type: Date, default: Date.now },
+    travelDate: { type: Date, required: true },
+    journeyDate: { type: Date, required: true },
+    contactNumber: { type: String },
+    email: { type: String },
+    cancellationReason: String,
+    cancelledAt: Date,
+    refundAmount: Number
+}, { timestamps: true });
+
+// Indexes
+bookingSchema.index({ userId: 1, bookingDate: -1 });
+bookingSchema.index({ busId: 1, travelDate: 1 });
+bookingSchema.index({ bookingId: 1 });
 
 // Generate booking ID before saving
 bookingSchema.pre('save', async function(next) {
-    if (!this.bookingId) {
+    if (this.isNew && !this.bookingId) {
         const date = new Date();
-        const year = date.getFullYear().toString().slice(-2);
-        const month = (date.getMonth() + 1).toString().padStart(2, '0');
-        const day = date.getDate().toString().padStart(2, '0');
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
         const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-        this.bookingId = `TRE${year}${month}${day}${random}`;
+        this.bookingId = `BK${year}${month}${day}${random}`;
     }
     next();
 });

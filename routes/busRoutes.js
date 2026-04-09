@@ -43,6 +43,124 @@ router.get('/routes/active', async (req, res) => {
         });
     }
 });
+// Add to your backend busRoutes.js
+
+// Public endpoint to get bus by ID (no authentication required)
+// router.get('/:id', async (req, res) => {
+//     try {
+//         const bus = await Bus.findById(req.params.id)
+//             .populate('routeId', 'origin destination departureTime arrivalTime duration distance');
+        
+//         if (!bus) {
+//             return res.status(404).json({
+//                 success: false,
+//                 message: 'Bus not found'
+//             });
+//         }
+        
+//         // Return only public data
+//         const publicBusData = {
+//             _id: bus._id,
+//             busNumber: bus.busNumber,
+//             busName: bus.busName,
+//             busType: bus.busType,
+//             operator: bus.operator,
+//             totalSeats: bus.totalSeats,
+//             fare: bus.fare,
+//             amenities: bus.amenities,
+//             routeId: bus.routeId,
+//             origin: bus.routeId?.origin,
+//             destination: bus.routeId?.destination,
+//             departureTime: bus.routeId?.departureTime,
+//             arrivalTime: bus.routeId?.arrivalTime,
+//             duration: bus.routeId?.duration,
+//             distance: bus.routeId?.distance,
+//             status: bus.status
+//         };
+        
+//         res.json({
+//             success: true,
+//             data: publicBusData
+//         });
+//     } catch (error) {
+//         console.error('Error fetching bus:', error);
+//         res.status(500).json({
+//             success: false,
+//             message: 'Error fetching bus details',
+//             error: error.message
+//         });
+//     }
+// });
+
+
+
+
+
+
+// In your backend busRoutes.js - Add this route BEFORE any admin routes
+
+// Public endpoint to get bus by ID (no authentication required)
+router.get('/:id', async (req, res) => {
+    try {
+        console.log(`📡 Fetching bus with ID: ${req.params.id}`);
+        
+        const bus = await Bus.findById(req.params.id)
+            .populate('routeId', 'origin destination departureTime arrivalTime duration distance');
+        
+        if (!bus) {
+            console.log(`❌ Bus not found with ID: ${req.params.id}`);
+            return res.status(404).json({
+                success: false,
+                message: 'Bus not found'
+            });
+        }
+        
+        console.log(`✅ Bus found: ${bus.busName} (${bus.busNumber})`);
+        
+        // Return public bus data
+        const publicBusData = {
+            _id: bus._id,
+            busNumber: bus.busNumber,
+            busName: bus.busName,
+            busType: bus.busType,
+            operator: bus.operator || 'Travel Agency',
+            totalSeats: bus.totalSeats || 32,
+            fare: bus.fare || 800,
+            amenities: bus.amenities || [],
+            departureTime: bus.departureTime,
+            arrivalTime: bus.arrivalTime,
+            departureDate: bus.departureDate,
+            arrivalDate: bus.arrivalDate,
+            status: bus.status,
+            seatLayout: bus.seatLayout || '2x2'
+        };
+        
+        res.json({
+            success: true,
+            data: publicBusData
+        });
+        
+    } catch (error) {
+        console.error('Error fetching bus:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching bus details',
+            error: error.message
+        });
+    }
+});
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Get all active buses
 router.get('/buses/active', async (req, res) => {

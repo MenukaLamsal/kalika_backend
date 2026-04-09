@@ -1,4 +1,6 @@
 
+// Add to index.js after other route imports
+// const bookingRouter = require('./routes/bookingRoutes');
 
 const express = require('express');
 const app = express();
@@ -55,6 +57,9 @@ app.use('/api', bookingRouter);
 app.use('/api', customerRouter); // Register customer routes
 app.use('/api', boardingPointRouter); // Register boarding point routes
 app.use('/api/payments', paymentRouter); // Register payment routes
+app.use('/api/bookings', bookingRouter);
+app.use('/api/bookings', bookingRouter);  // This line ensures both paths work
+
 
 
 // Test route
